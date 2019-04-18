@@ -6,13 +6,14 @@
 #include <unistd.h>
 #include <netinet/ip.h>
 #include <netinet/ip_icmp.h>
-#include <linux/if_ether.h>
+#include <linux/if_ether.h>	//ETH_ALEN(6),ETH_HLEN(14),ETH_FRAME_LEN(1514)
 #include <netdb.h>
 #include <sys/time.h>
 
 #define BUFFER_MAX 2048
 #define MAX_ROUTE_INFO 20
 #define MAX_ARP_SIZE 20
+const char myip[16] = "192.168.100.2";
 
 unsigned short checksum(unsigned short* addr,int length);
 unsigned short little_endian(unsigned short x);
@@ -34,6 +35,7 @@ typedef struct ICMP_HEAD{
     unsigned int other;//其余4字节*/
 }Icmp_h;
 
+/*
 //IP头部，总长度20字节
 typedef struct IP_HEAD{
     unsigned char version: 4;	//版本
@@ -50,7 +52,6 @@ typedef struct IP_HEAD{
 	struct in_addr dst_addr;    //目的IP地址
 }Ip_h;
 
-/*
 //arp头部，总长度
 typedef struct ARP_HEAD{
 	unsigned short arp_hrd;		//硬件类型
@@ -63,7 +64,15 @@ typedef struct ARP_HEAD{
 	unsigned char arp_tha[6];	//目的MAC
 	unsigned long arp_tpa;		//目的IP
 }Arp_h;
+
+//以太网头部
+typedef struct ETH_HEAD{
+	unsigned char eth_dst[6];	//destination ethernet addrress
+	unsigned char eth_src[6];	//source ethernet addresss
+	unsigned short eth_type;	//ethernet pachet type
+}Eth_h;
 */
+
 //ARP表
 struct ARP_TABLE_ITEM{
     char ip_addr[16];
@@ -80,24 +89,24 @@ int device_index = 0;
 
 //以太网头部
 typedef struct ETH_HEAD{
-	unsigned char eth_dst[6];   /* destination ethernet addrress */
-	unsigned char eth_src[6];   /* source ethernet addresss */
-	unsigned short eth_type;   /* ethernet pachet type */
+    struct ethhdr header;
 }Eth_h;
 //---------------------------------------------------------------------------------------------------
 
 int main(int argc,char* argv[]){
-//--------------------------- arp table && device --------------------------------------------------
+//--------------------------- arp table && device set ----------------------------------------------
 	strcpy(Arp_table[0].ip_addr, "192.168.100.1");
-	strcpy(Arp_table[0].mac_addr, "00:0c:29:84:0b:6c");
+	memcpy(Arp_table[0].mac_addr, "000c29840b6c", 6);//不加:
 	arp_item_index++;
 	strcpy(Device[0].interface, "eth0");
-	strcpy(Device[0].mac_addr, "00:0c:29:c5:1c:c8");
+	memcpy(Device[0].mac_addr, "000c29c51cc8", 6);//不加:
+	device_index++;
 //--------------------------------------------------------------------------------------------------
 
 //------------------------------- open --------------------------------------------------------------
 	int sock_send;
 	int sock_receive;
+	int val = 1;
 	if((sock_receive=socket(PF_PACKET,SOCK_RAW,htons(ETH_P_ALL)))<0){//打开接收
         printf("error create raw receive socket\n");
         return -1;
@@ -106,6 +115,11 @@ int main(int argc,char* argv[]){
         printf("error create raw send socket\n");
         return -1;
     }
+	if(setsockopt(sock_send, IPPROTO_IP, IP_HDRINCL, (char *)&val, sizeof(val))==SOCKET_ERROR)//开启IP_HDRINGL
+	{
+		printf("failed to set socket in raw mode.");
+		return 0;
+	}
 //---------------------------------------------------------------------------------------------------
 
 	//--------------------------- 配置 host 获得 IP 地址 ---------------------------------------------
@@ -144,26 +158,51 @@ int main(int argc,char* argv[]){
     unsigned char *p;
 	unsigned seq = 1;//icmp_seq
 	int flag = 1;
+
+	struct ip* ip_h;
 //---------------------------------------------------------------------------------------------------
 
     while(1){
 //---------------------------------- send -----------------------------------------------------------
-		
+	
 	//------------------------------ fill ETH, IP, ICMP head ----------------------------------------
 	if(flag){
 	//------------------------------ ETH ------------------------------------------------------------
 		Eth_h* eth;
 		eth = (Eth_h* )buffer_send;
-		strcpy(eth->eth_dst, Arp_table[0].mac_addr);
-		strcpy(eth->eth_src, Device[0].mac_addr);
-		eth->eth_type = 0x800;//??????????????
+		/*memcpy(eth->eth_dst, Arp_table[0].mac_addr, 6);
+		memcpy(eth->eth_src, Device[0].mac_addr, 6);
+		eth->eth_type = 0x800;//??????????????*/
+		memcpy(eth->header.h_dest, Arp_table[0].mac_addr, ETH_ALEN);
+    	memcpy(eth->header.h_source, Device[0].mac_addr, ETH_ALEN);
+		eth->header.h_proto = htons((short)0x0800);
 	//-----------------------------------------------------------------------------------------------
 	//------------------------------ IP -------------------------------------------------------------
-		
-	//-----------------------------------------------------------------------------------------------
+		//htons是将整型变量从主机字节顺序转变成网络字节顺序， 就是整数在地址空间存储方式变为高位字节存放在内存的低地址处。
+		//inet_addr方法可以转化字符串，主要用来将一个十进制的数转化为二进制的数，用途多于ipv4的IP转化。
+		ip_h = (struct ip* )(buffer_send + 14);
+		ip_h->ip_hl = 5;//5 * 4 = 20
+  		ip_h->ip_v = 4;//Internet Protocol version (4 bits): IPv4
+  		ip_h->ip_tos = 0;//Type of service (8 bits)
+		ip_h->ip_len = htons(84);//ip_head + icmp_head + mydata = 98 - eth_head = 84
+		ip_h->ip_id = htons(0);//ID sequence number (16 bits): unused, since single datagram
+		ip_h->ip_flags[0] = 0;// Zero (1 bit)
+		ip_h->ip_flags[1] = 1;// Do not fragment flag (1 bit)
+		ip_h->ip_flags[2] = 0;// More fragments following flag (1 bit)
+		ip_h->ip_flags[3] = 0;// Fragmentation offset (13 bits)
+		//ip_h->ip_off = htons((ip_flags[0] << 15)+ (ip_flags[1] << 14)//???
+        //            + (ip_flags[2] << 13)+  ip_flags[3]);
+		ip_h->ip_off = htons(0);//not sure
+		ip_h->ip_ttl = 64;//time to live
+		ip_h->ip_p = IPPROTO_ICMP;//next proto: ICMP(1)
+		ip_h->ip_sum = 0;//temporarily 0
+		ip_h->ip_src.s_addr = inet_addr(myip);//myip, fixed
+		ip_h->ip_dst.s_addr = inet_addr(argv[1]);//dst's ip, from argv[1]
+		ip_h->ip_sum = check_sum((unsigned short* )ip_h, 20);//ip_header's checksum
+	//------------------------------ ICMP -----------------------------------------------------------
 		Icmp_h* icmp;
 		struct timeval tsend;
-        icmp = (Icmp_h* )buffer_send;
+        icmp = (Icmp_h* )(buffer_send + 34);
         icmp->type = ICMP_ECHO;//请求报文，类型为8
 		//icmp->type = 13;
         icmp->code = 0;//code = 0
@@ -178,7 +217,7 @@ int main(int argc,char* argv[]){
 		strcpy(mydata, "Hello World! With my sincerity! ");//传输的data为Hello World! With my sincerity! 
         icmp->check_sum = checksum( (unsigned short *)icmp, 64);
 	//-----------------------------------------------------------------------------------------------
-        if( sendto(sock_send, buffer_send, 64, 0, (struct sockaddr *)&dest_addr,sizeof(dest_addr) )<0){       
+        if( sendto(sock_send, buffer_send, 98, 0, (struct sockaddr *)&dest_addr,sizeof(dest_addr) )<0){       
             printf("sendto fail!\n");
         }
 		flag = 0;
