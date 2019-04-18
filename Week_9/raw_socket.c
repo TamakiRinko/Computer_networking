@@ -49,10 +49,10 @@ typedef struct IP_HEAD{
 	struct in_addr src_addr;    //源IP地址
 	struct in_addr dst_addr;    //目的IP地址
 }Ip_h;
+
 /*
 //arp头部，总长度
-typedef struct arphdr
-{
+typedef struct ARP_HEAD{
 	unsigned short arp_hrd;		//硬件类型
 	unsigned short arp_pro;		//协议类型
 	unsigned char arp_hln;		//硬件地址长度
@@ -77,11 +77,24 @@ struct DEVICE_ITEM{
 	char mac_addr[18];
 }Device[MAX_DEVICE];
 int device_index = 0;
+
+//以太网头部
+typedef struct ETH_HEAD{
+	unsigned char eth_dst[6];   /* destination ethernet addrress */
+	unsigned char eth_src[6];   /* source ethernet addresss */
+	unsigned short eth_type;   /* ethernet pachet type */
+}Eth_h;
 //---------------------------------------------------------------------------------------------------
 
 int main(int argc,char* argv[]){
-	//strcpy(Arp_table[0].in_addr, "192.168.100.1");
-	//strcpy(Arp_table[0].mac_addr, "")
+//--------------------------- arp table && device --------------------------------------------------
+	strcpy(Arp_table[0].ip_addr, "192.168.100.1");
+	strcpy(Arp_table[0].mac_addr, "00:0c:29:84:0b:6c");
+	arp_item_index++;
+	strcpy(Device[0].interface, "eth0");
+	strcpy(Device[0].mac_addr, "00:0c:29:c5:1c:c8");
+//--------------------------------------------------------------------------------------------------
+
 //------------------------------- open --------------------------------------------------------------
 	int sock_send;
 	int sock_receive;
@@ -136,8 +149,18 @@ int main(int argc,char* argv[]){
     while(1){
 //---------------------------------- send -----------------------------------------------------------
 		
-	//------------------------------ fill ICMP head -------------------------------------------------
-		if(flag){
+	//------------------------------ fill ETH, IP, ICMP head ----------------------------------------
+	if(flag){
+	//------------------------------ ETH ------------------------------------------------------------
+		Eth_h* eth;
+		eth = (Eth_h* )buffer_send;
+		strcpy(eth->eth_dst, Arp_table[0].mac_addr);
+		strcpy(eth->eth_src, Device[0].mac_addr);
+		eth->eth_type = 0x800;//??????????????
+	//-----------------------------------------------------------------------------------------------
+	//------------------------------ IP -------------------------------------------------------------
+		
+	//-----------------------------------------------------------------------------------------------
 		Icmp_h* icmp;
 		struct timeval tsend;
         icmp = (Icmp_h* )buffer_send;
