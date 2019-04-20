@@ -13,6 +13,7 @@
 #define BUFFER_MAX 2048
 #define MAX_ROUTE_INFO 20
 #define MAX_ARP_SIZE 20
+#define MAX_DEVICE 5
 const char myip[16] = "192.168.100.2";
 
 unsigned short checksum(unsigned short* addr,int length);
@@ -75,15 +76,15 @@ typedef struct ETH_HEAD{
 
 //ARP表
 struct ARP_TABLE_ITEM{
-    char ip_addr[16];
-    char mac_addr[18];
+    unsigned char ip_addr[16];
+    unsigned char mac_addr[18];
 }Arp_table[MAX_ARP_SIZE];
 int arp_item_index = 0;
 
 //本设备接口与MAC地址的对应关系
 struct DEVICE_ITEM{
-	char interface[14];
-	char mac_addr[18];
+	unsigned char interface[14];
+	unsigned char mac_addr[18];
 }Device[MAX_DEVICE];
 int device_index = 0;
 
@@ -95,12 +96,23 @@ typedef struct ETH_HEAD{
 
 int main(int argc,char* argv[]){
 //--------------------------- arp table && device set ----------------------------------------------
+	//unsigned char gate_mac[7] = {0x00, 0x0c, 0x29, 0x84, 0x0b, 0x6c};
+	//unsigned char my_mac[7] = {0x00, 0x0c, 0x29, 0xc5, 0x1c, 0xc8};
 	strcpy(Arp_table[0].ip_addr, "192.168.100.1");
-	memcpy(Arp_table[0].mac_addr, "000c29840b6c", 6);//不加:
+	memcpy(Arp_table[0].mac_addr, /*gate_mac*/"00:0c:29:c5:1c:c8", 18);//不加:
 	arp_item_index++;
 	strcpy(Device[0].interface, "eth0");
-	memcpy(Device[0].mac_addr, "000c29c51cc8", 6);//不加:
+	memcpy(Device[0].mac_addr, /*my_mac*/"00:0c:29:84:0b:6c", 18);//不加:
 	device_index++;
+	/*int k;
+	for(k = 0; k < 6; ++k){
+		printf("%x ", (unsigned)(Arp_table[0].mac_addr[k]));
+	}
+	printf("\n");
+	for(k = 0; k < 6; ++k){
+		printf("%x ", (unsigned)(Device[0].mac_addr[k]));
+	}
+	printf("\n");*/
 //--------------------------------------------------------------------------------------------------
 
 //------------------------------- open --------------------------------------------------------------
@@ -111,11 +123,11 @@ int main(int argc,char* argv[]){
         printf("error create raw receive socket\n");
         return -1;
     }
-    if((sock_send=socket(AF_INET, SOCK_RAW, IPPROTO_ICMP))<0){//打开发送
+    if((sock_send=socket(AF_INET, SOCK_RAW, /*IPPROTO_ICMP*/IPPROTO_RAW))<0){//打开发送
         printf("error create raw send socket\n");
         return -1;
     }
-	if(setsockopt(sock_send, IPPROTO_IP, IP_HDRINCL, (char *)&val, sizeof(val))==SOCKET_ERROR)//开启IP_HDRINGL
+	if(setsockopt(sock_send, IPPROTO_IP, IP_HDRINCL, (char *)&val, sizeof(val))/*==SOCKET_ERROR*/ < 0)//开启IP_HDRINGL
 	{
 		printf("failed to set socket in raw mode.");
 		return 0;
@@ -138,7 +150,7 @@ int main(int argc,char* argv[]){
         memcpy( (char *)&dest_addr.sin_addr,host->h_addr,host->h_length);
     }
     else{
-    	dest_addr.sin_addr.s_addr = myaddr;
+    	dest_addr.sin_addr.s_addr = inet_addr(argv[1]);
     	//memcpy( (char *)&dest_addr,(char *)&myaddr,host->h_length);
     	//printf("addr = %s\n", inet_ntoa(dest_addr.sin_addr));
     }
@@ -149,9 +161,10 @@ int main(int argc,char* argv[]){
     int proto;//协议类型
     int n_read;
     unsigned char buffer[BUFFER_MAX];//接收字符串
-	char buffer_send[4096] = "\0";//发送字符串
+	unsigned char buffer_send[4096] = "\0";//发送字符串
     Icmp_h icmp_h;//ICMP头，用于存储获得的icmp头
-    Ip_h ip_h;//IP头，同上
+    //Ip_h ip_h;//IP头，同上
+	struct ip ip_h2;
     char *eth_head;
     char *ip_head;
     char *icmp_head;
@@ -160,6 +173,7 @@ int main(int argc,char* argv[]){
 	int flag = 1;
 
 	struct ip* ip_h;
+	int ip_flags[4];
 //---------------------------------------------------------------------------------------------------
 
     while(1){
@@ -173,32 +187,45 @@ int main(int argc,char* argv[]){
 		/*memcpy(eth->eth_dst, Arp_table[0].mac_addr, 6);
 		memcpy(eth->eth_src, Device[0].mac_addr, 6);
 		eth->eth_type = 0x800;//??????????????*/
-		memcpy(eth->header.h_dest, Arp_table[0].mac_addr, ETH_ALEN);
-    	memcpy(eth->header.h_source, Device[0].mac_addr, ETH_ALEN);
+
+
+		//memcpy(eth->header.h_dest, Arp_table[0].mac_addr, ETH_ALEN);
+    	//memcpy(eth->header.h_source, Device[0].mac_addr, ETH_ALEN);
+		int t;
+		for(t = 0; t < 6; ++t){
+			eth->header.h_dest[t] = strtol(Arp_table[0].mac_addr + 3 * t, NULL, 16);
+			eth->header.h_source[t] = strtol(Device[0].mac_addr + 3 * t, NULL, 16);
+			//printf("mac1 = %x    mac2 = %x\n", eth->header.h_dest[t], eth->header.h_source[t]);
+		}
+		/*for(t = 0; t < 12; ++t){
+			printf("buffer = %x   ", buffer_send[t]);
+		}*/
 		eth->header.h_proto = htons((short)0x0800);
 	//-----------------------------------------------------------------------------------------------
 	//------------------------------ IP -------------------------------------------------------------
 		//htons是将整型变量从主机字节顺序转变成网络字节顺序， 就是整数在地址空间存储方式变为高位字节存放在内存的低地址处。
 		//inet_addr方法可以转化字符串，主要用来将一个十进制的数转化为二进制的数，用途多于ipv4的IP转化。
+		//ip_flags = allocate_intmem(4);
 		ip_h = (struct ip* )(buffer_send + 14);
 		ip_h->ip_hl = 5;//5 * 4 = 20
   		ip_h->ip_v = 4;//Internet Protocol version (4 bits): IPv4
   		ip_h->ip_tos = 0;//Type of service (8 bits)
 		ip_h->ip_len = htons(84);//ip_head + icmp_head + mydata = 98 - eth_head = 84
 		ip_h->ip_id = htons(0);//ID sequence number (16 bits): unused, since single datagram
-		ip_h->ip_flags[0] = 0;// Zero (1 bit)
-		ip_h->ip_flags[1] = 1;// Do not fragment flag (1 bit)
-		ip_h->ip_flags[2] = 0;// More fragments following flag (1 bit)
-		ip_h->ip_flags[3] = 0;// Fragmentation offset (13 bits)
-		//ip_h->ip_off = htons((ip_flags[0] << 15)+ (ip_flags[1] << 14)//???
-        //            + (ip_flags[2] << 13)+  ip_flags[3]);
-		ip_h->ip_off = htons(0);//not sure
+		ip_flags[0] = 0;// Zero (1 bit)
+		ip_flags[1] = 1;// Do not fragment flag (1 bit)
+		ip_flags[2] = 0;// More fragments following flag (1 bit)
+		ip_flags[3] = 0;// Fragmentation offset (13 bits)
+		ip_h->ip_off = htons((ip_flags[0] << 15)+ (ip_flags[1] << 14)//???
+                    + (ip_flags[2] << 13)+  ip_flags[3]);
+		//free(ip_flags);
+		//ip_h->ip_off = htons(0);//not sure
 		ip_h->ip_ttl = 64;//time to live
 		ip_h->ip_p = IPPROTO_ICMP;//next proto: ICMP(1)
 		ip_h->ip_sum = 0;//temporarily 0
 		ip_h->ip_src.s_addr = inet_addr(myip);//myip, fixed
 		ip_h->ip_dst.s_addr = inet_addr(argv[1]);//dst's ip, from argv[1]
-		ip_h->ip_sum = check_sum((unsigned short* )ip_h, 20);//ip_header's checksum
+		ip_h->ip_sum = checksum((unsigned short* )ip_h, 20);//ip_header's checksum
 	//------------------------------ ICMP -----------------------------------------------------------
 		Icmp_h* icmp;
 		struct timeval tsend;
@@ -213,9 +240,13 @@ int main(int argc,char* argv[]){
 		gettimeofday(&tsend,NULL); //记录发送时间
 		icmp->data = tsend;//存放到icmp数据中
 		//printf("seq = %d, sec = %x, usec = %x\n", icmp->seq, (int)(send.tv_sec), (int)(send.tv_usec));
-		char* mydata = buffer_send + 16;
+		char* mydata = buffer_send + 50;
 		strcpy(mydata, "Hello World! With my sincerity! ");//传输的data为Hello World! With my sincerity! 
         icmp->check_sum = checksum( (unsigned short *)icmp, 64);
+		int i = 0;
+		for(; i < 98; ++i)
+			printf("%x ", (unsigned)buffer_send[i]);
+		printf("\n");
 	//-----------------------------------------------------------------------------------------------
         if( sendto(sock_send, buffer_send, 98, 0, (struct sockaddr *)&dest_addr,sizeof(dest_addr) )<0){       
             printf("sendto fail!\n");
@@ -246,7 +277,7 @@ int main(int argc,char* argv[]){
 			p = ip_head + 12;
 			struct timeval temp;//发送的时间
 			memcpy(&icmp_h, buffer + 34, 8);//赋值icmp头
-			memcpy(&ip_h, buffer + 14, 20);//赋值ip头
+			memcpy(&ip_h2, buffer + 14, 20);//赋值ip头
 			memcpy(&temp, buffer + 42, 8);//赋值时间
 			double time_tran;
 			struct timeval tvrecv;//接收的时间
@@ -264,7 +295,7 @@ int main(int argc,char* argv[]){
 			//printf("total_len = %x\n", ip_h.total_len);
             printf("ip_head:  version = %u,   hlen = %u,   total_len = %u,   ttl = %u,   protocol = ICMP,   check_sum = 0x%x   data = %s\n\n", 
             ip_h.version, ip_h.hlen * 4, little_endian(ip_h.total_len), ip_h.ttl, little_endian(ip_h.check_sum), buffer + 42);*/
-			printf("64 bytes from %d.%d.%d.%d: icmp_req=%u ttl=%u time=%.1fms\n", p[0], p[1], p[2], p[3], icmp_h.seq, ip_h.ttl, time_tran);
+			printf("64 bytes from %d.%d.%d.%d: icmp_req=%u ttl=%u time=%.1fms\n", p[0], p[1], p[2], p[3], icmp_h.seq, ip_h2.ip_ttl, time_tran);
 			sleep(1);//停1秒
         }
     //---------------------------------------------------------------------------------------------------
