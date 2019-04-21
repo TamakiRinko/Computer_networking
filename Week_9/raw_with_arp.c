@@ -25,6 +25,7 @@ unsigned short checksum(unsigned short* addr,int length);
 unsigned short little_endian(unsigned short x);
 void sub(struct timeval* rec,struct timeval* sen);
 int get_nic_index(int fd, const char* nic_name);
+void SendARP(int& sock_send_arp, char* dst_ip);
 
 //------------------------------- 结构定义 ----------------------------------------------------
 //ICMP头部，总长度8字节
@@ -42,6 +43,19 @@ typedef struct ICMP_HEAD{
     unsigned int other;//其余4字节*/
 }Icmp_h;
 
+//arp头部，总长度
+typedef struct ARP_HEAD{
+	unsigned short arp_hrd;		//硬件类型
+	unsigned short arp_pro;		//协议类型
+	unsigned char arp_hln;		//硬件地址长度
+	unsigned char arp_pln;		//协议地址长度
+	unsigned short arp_op;		//???
+	unsigned char arp_sha[6];	//源MAC
+	unsigned long arp_spa;		//源IP
+	unsigned char arp_tha[6];	//目的MAC
+	unsigned long arp_tpa;		//目的IP
+}Arp_h;
+
 /*
 //IP头部，总长度20字节
 typedef struct IP_HEAD{
@@ -58,19 +72,6 @@ typedef struct IP_HEAD{
 	struct in_addr src_addr;    //源IP地址
 	struct in_addr dst_addr;    //目的IP地址
 }Ip_h;
-
-//arp头部，总长度
-typedef struct ARP_HEAD{
-	unsigned short arp_hrd;		//硬件类型
-	unsigned short arp_pro;		//协议类型
-	unsigned char arp_hln;		//硬件地址长度
-	unsigned char arp_pln;		//协议地址长度
-	unsigned short arp_op;		//???
-	unsigned char arp_sha[6];	//源MAC
-	unsigned long arp_spa;		//源IP
-	unsigned char arp_tha[6];	//目的MAC
-	unsigned long arp_tpa;		//目的IP
-}Arp_h;
 
 //以太网头部
 typedef struct ETH_HEAD{
@@ -101,29 +102,43 @@ typedef struct ETH_HEAD{
 //---------------------------------------------------------------------------------------------------
 
 int main(int argc,char* argv[]){
-//--------------------------- arp table && device set ----------------------------------------------
+//------------------------------- 变量定义 -----------------------------------------------------------
+    int proto;//协议类型
+    int n_read;
+    unsigned char buffer[BUFFER_MAX];//接收字符串
+	unsigned char buffer_send[4096] = "\0";//发送字符串
+    Icmp_h icmp_h;//ICMP头，用于存储获得的icmp头
+    //Ip_h ip_h;//IP头，同上
+	struct ip ip_h2;
+    char* eth_head;
+    char* ip_head;
+    char* icmp_head;
+    char* arp_head;
+    Arp_h* arp_head2;//????????????????????????暂定
+    unsigned char *p;
+	unsigned seq = 1;//icmp_seq
+	int flag = 1;
+
+	struct ip* ip_h;
+	int ip_flags[4];//ip's flags
+//---------------------------------------------------------------------------------------------------
+
+//--------------------------- arp table && device set -----------------------------------------------
 	//unsigned char gate_mac[7] = {0x00, 0x0c, 0x29, 0x84, 0x0b, 0x6c};
 	//unsigned char my_mac[7] = {0x00, 0x0c, 0x29, 0xc5, 0x1c, 0xc8};
-	strcpy(Arp_table[0].ip_addr, "192.168.100.1");
-	memcpy(Arp_table[0].mac_addr, /*gate_mac*/"00:0c:29:84:0b:6c", 18);
-	arp_item_index++;
+	//strcpy(Arp_table[0].ip_addr, "192.168.100.1");
+	//memcpy(Arp_table[0].mac_addr, /*gate_mac*/"00:0c:29:84:0b:6c", 18);
+	//arp_item_index++;
 	strcpy(Device[0].interface, "eth0");
 	memcpy(Device[0].mac_addr, /*my_mac*/"00:0c:29:c5:1c:c8", 18);
 	device_index++;
-	/*int k;
-	for(k = 0; k < 6; ++k){
-		printf("%x ", (unsigned)(Arp_table[0].mac_addr[k]));
-	}
-	printf("\n");
-	for(k = 0; k < 6; ++k){
-		printf("%x ", (unsigned)(Device[0].mac_addr[k]));
-	}
-	printf("\n");*/
-//--------------------------------------------------------------------------------------------------
+//---------------------------------------------------------------------------------------------------
 
 //------------------------------- open --------------------------------------------------------------
 	int sock_send;
 	int sock_receive;
+    int sock_receive_arp;
+    int sock_send_arp;
 	int val = 1;
 	if((sock_receive=socket(PF_PACKET,SOCK_RAW,htons(ETH_P_ALL)))<0){//打开接收
         printf("error create raw receive socket\n");
@@ -131,6 +146,14 @@ int main(int argc,char* argv[]){
     }
     if((sock_send=socket(PF_PACKET, SOCK_RAW, htons(ETH_P_ALL)))<0){//打开发送
         printf("error create raw send socket\n");
+        return -1;
+    }
+    if((sock_send_arp=socket(PF_PACKET, SOCK_RAW, htons(ETH_P_ALL)))<0){//打开ARP发送
+        printf("error create raw send arp socket\n");
+        return -1;
+    }
+    if((sock_receive_arp=socket(PF_PACKET,SOCK_RAW,htons(ETH_P_ARP)))<0){//打开ARP接收
+        printf("error create raw receive arp socket\n");
         return -1;
     }
 	
@@ -142,27 +165,62 @@ int main(int argc,char* argv[]){
 	//}
 //---------------------------------------------------------------------------------------------------
 
-//--------------------------- 配置 host 获得 IP 地址 ---------------------------------------------
-	/*
-	unsigned int myaddr = inet_addr(argv[1]);
-	struct hostent* host;//配置host
-	struct sockaddr_in dest_addr;
-	memset(&dest_addr,0,sizeof(dest_addr));
-	dest_addr.sin_family = AF_INET;
-	
-	if( myaddr == INADDR_NONE ){
-		if( (host = gethostbyname(argv[1]) ) == NULL){//是主机名
-	    	perror("gethostbyname error");
-            return -1;
+//--------------------------- 配置链路层发送结构 ------------------------------------------------------
+    int m;
+    //-------------------------- 判断MAC地址是否在ARP表中 ---------------------------------------------
+    int arp_flag = 0;
+    int arp_index = -1;
+    for(m = 0; m < arp_item_index; ++m){
+        if(strcmp(argv[1], Arp_table[m].ip_addr) == 0){
+            arp_flag = 1;
+            break;
         }
-        memcpy( (char *)&dest_addr.sin_addr,host->h_addr,host->h_length);
     }
-    else{
-    	dest_addr.sin_addr.s_addr = inet_addr(argv[1]);
-    	//memcpy( (char *)&dest_addr,(char *)&myaddr,host->h_length);
-    	//printf("addr = %s\n", inet_ntoa(dest_addr.sin_addr));
-    }*/
+    if(arp_flag == 1){//ARP表中有该项，使用该项
+        arp_index = m;
+    }
+    else{//ARP表中无该项，发送ARP请求报文
+        int arp_send_flag = 1;
+        int len_arp;//收到ARP包的长度
+        unsigned char buffer_rece_arp[BUFFER_MAX];
+        while(!arp_flag){//还未收到ARP回复报文
+            if(arp_send_flag == 1){
+                for(m = 0; m < 10; ++m){//暂时实现为发送10个ARP包
+                    SendARP(sock_send_arp, argv[1]);
+                }
+                arp_send_flag = 0;
+            }
+            len_arp = recvfrom(sock_receive_arp, buffer_rece_arp, 2048, 0, NULL, NULL);
+            if(len_arp != 42)   continue;
+            eth_head = buffer_rece_arp;
+            arp_head = buffer_rece_arp + 14;
+            arp_head2 = buffer_rece_arp + 14;
+            if(arp_head[7] != 2)    continue;//不是ARP响应
+            //------------------- 判断是否为对应的MAC地址 ---------------------------------------------
+            int match = 1;
+            for(m = 0; m < 6; ++m){
+                if(arp_head[m + 18] != (strtol(Device[0].mac_addr + 3 * m, NULL, 16))){//匹配我方MAC地址
+                    match = 0;
+                    break;
+                }
+            }
+            if(arp_head2->arp_spa != inet_addr(argv[1])){//匹配目的IP地址
+                match = 0;
+            }
+            if(!match)  continue;
+            //---------------------------------------------------------------------------------------
 
+            //-------------------- 匹配，添加表项并跳出循环 -------------------------------------------
+            strcpy(Arp_table[arp_item_index].ip_addr, argv[1]);
+            sprintf(Arp_table[arp_item_index].mac_addr, "%02x:%02x:%02x:%02x:%02x:%02x",//not sure!!!!!!!!!!!!!!!!!!!
+                arp_head[13], arp_head[12], arp_head[11], arp_head[10], arp_head[9], arp_head[8]);
+            arp_index = arp_item_index;
+            arp_item_index++;
+            arp_flag = 1;
+            //---------------------------------------------------------------------------------------
+        }
+    }
+    //-----------------------------------------------------------------------------------------------
 
 	struct sockaddr_ll saddrll;//链路层需要用此结构
     memset(&saddrll, 0, sizeof(saddrll));
@@ -170,32 +228,12 @@ int main(int argc,char* argv[]){
 	//saddrll.sll_protocol = ETH_P_IP;//????
     saddrll.sll_ifindex = get_nic_index(sock_send, Device[0].interface);//获得本接口对应的类型
     saddrll.sll_halen = ETH_ALEN;
-	int m;
 	for(m = 0; m < 6; ++m){//目的MAC地址
-		saddrll.sll_addr[m] = strtol(Arp_table[0].mac_addr + 3 * m, NULL, 16);//字符串转16进制数
+		saddrll.sll_addr[m] = strtol(Arp_table[arp_index].mac_addr + 3 * m, NULL, 16);//字符串转16进制数
 		//printf("%x  ", saddrll.sll_addr[m]);
 	}
     //memcpy(saddrll.sll_addr, dest, ETH_ALEN);
         
-//-----------------------------------------------------------------------------------------------
-
-//------------------------------- 变量定义 -----------------------------------------------------------
-    int proto;//协议类型
-    int n_read;
-    unsigned char buffer[BUFFER_MAX];//接收字符串
-	unsigned char buffer_send[4096] = "\0";//发送字符串
-    Icmp_h icmp_h;//ICMP头，用于存储获得的icmp头
-    //Ip_h ip_h;//IP头，同上
-	struct ip ip_h2;
-    char *eth_head;
-    char *ip_head;
-    char *icmp_head;
-    unsigned char *p;
-	unsigned seq = 1;//icmp_seq
-	int flag = 1;
-
-	struct ip* ip_h;
-	int ip_flags[4];//ip's flags
 //---------------------------------------------------------------------------------------------------
 
     while(1){
@@ -206,13 +244,6 @@ int main(int argc,char* argv[]){
 	//------------------------------ ETH ------------------------------------------------------------
 		Eth_h* eth;
 		eth = (Eth_h* )buffer_send;
-		/*memcpy(eth->eth_dst, Arp_table[0].mac_addr, 6);
-		memcpy(eth->eth_src, Device[0].mac_addr, 6);
-		eth->eth_type = 0x800;//??????????????*/
-
-
-		//memcpy(eth->header.h_dest, Arp_table[0].mac_addr, ETH_ALEN);
-    	//memcpy(eth->header.h_source, Device[0].mac_addr, ETH_ALEN);
 		int t;
 		for(t = 0; t < 6; ++t){//目的MAC地址，源MAC地址，使用转换
 			eth->header.h_dest[t] = strtol(Arp_table[0].mac_addr + 3 * t, NULL, 16);
@@ -240,8 +271,6 @@ int main(int argc,char* argv[]){
 		ip_flags[3] = 0;// Fragmentation offset (13 bits)
 		ip_h->ip_off = htons((ip_flags[0] << 15)+ (ip_flags[1] << 14)//off + flags
                     + (ip_flags[2] << 13)+  ip_flags[3]);
-		//free(ip_flags);
-		//ip_h->ip_off = htons(0);//not sure
 		ip_h->ip_ttl = 64;//time to live
 		ip_h->ip_p = IPPROTO_ICMP;//next proto: ICMP(1)
 		ip_h->ip_sum = 0;//temporarily 0
@@ -272,7 +301,7 @@ int main(int argc,char* argv[]){
 		//printf("111\n");
 	//-----------------------------------------------------------------------------------------------
         if( sendto(sock_send, buffer_send, 98, 0, (struct sockaddr*)&saddrll, sizeof(saddrll)) < 0){//发送
-            printf("sendto fail!  error = %x, decimal = %d\n", errno, errno);//发送失败，获得最后错误代码
+            printf("now in icmp_send, sendto fail!  error = %x, decimal = %d\n", errno, errno);//发送失败，获得最后错误代码
 			return -1;
         }
 		sleep(1);
@@ -380,4 +409,57 @@ int get_nic_index(int fd, const char* nic_name){//获得接口对应的类型
         return -1;
     }
     return ifr.ifr_ifindex;
+}
+
+void SendARP(int& sock_send_arp, char* dst_ip){
+    //------------------------- 配置链路层发送结构 -------------------------------------------------
+    struct sockaddr_ll saddrll;//链路层需要用此结构
+    memset(&saddrll, 0, sizeof(saddrll));
+    saddrll.sll_family = PF_PACKET;
+    saddrll.sll_ifindex = get_nic_index(sock_send_arp, Device[0].interface);//获得本接口对应的类型
+    saddrll.sll_halen = ETH_ALEN;
+	for(m = 0; m < 6; ++m){//目的MAC地址
+		saddrll.sll_addr[m] = 0xff;//广播ARP报文，目的MAC为全FF
+		//printf("%x  ", saddrll.sll_addr[m]);
+	}
+    //--------------------------------------------------------------------------------------------
+
+    unsigned char buffer[50] = "\0";
+    //------------------------- FILL ETH_HEAD ----------------------------------------------------
+    Eth_h* eth;
+    eth = (Eth_h* )buffer;
+    int t;
+    for(t = 0; t < 6; ++t){//目的MAC地址，源MAC地址，使用转换
+        eth->header.h_dest[t] = 0xff;
+        eth->header.h_source[t] = strtol(Device[0].mac_addr + 3 * t, NULL, 16);
+        //printf("mac1 = %x    mac2 = %x\n", eth->header.h_dest[t], eth->header.h_source[t]);
+    }
+    /*for(t = 0; t < 12; ++t){
+        printf("buffer = %x   ", buffer_send[t]);
+    }*/
+    eth->header.h_proto = htons((short)0x0806);//上层协议为ARP协议
+    //--------------------------------------------------------------------------------------------
+
+    //------------------------ FILL ARP_HEAD -----------------------------------------------------
+    Arp_h* arp_h = (Arp_h* )(buffer + 14)
+    arp_h->arp_hrd = htons(1);//1表示以太网地址
+    arp_h->arp_pro = htons(0x0800);//映射的地址类型为IPv4
+    arp_h->arp_hln = 6;
+    arp_h->arp_pln = 4;
+    arp_h->arp_op = 1;//请求
+    for(t = 0; t < 6; ++t){//目的MAC地址，源MAC地址，使用转换
+        arp_h->arp_sha[t] = strtol(Device[0].mac_addr + 3 * t, NULL, 16);
+        arp_h->arp_tha[t] = 0xff;
+        //printf("mac1 = %x    mac2 = %x\n", eth->header.h_dest[t], eth->header.h_source[t]);
+    }
+    arp_h->arp_spa = inet_addr(myip);
+    arp_h->arp_tpa = inet_addr(dst_ip);
+    //-------------------------------------------------------------------------------------------
+
+    //------------------------ SEND -------------------------------------------------------------
+    if( sendto(sock_send_arp, buffer, 42, 0, (struct sockaddr*)&saddrll, sizeof(saddrll)) < 0){//发送
+        printf("now in arp_send, sendto fail!  error = %x, decimal = %d\n", errno, errno);//发送失败，获得最后错误代码
+        return -1;
+    }
+    //-------------------------------------------------------------------------------------------
 }
