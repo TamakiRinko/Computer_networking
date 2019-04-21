@@ -10,6 +10,11 @@
 #include <netdb.h>
 #include <sys/time.h>
 
+#include <errno.h>//errno
+#include <linux/if_packet.h>  	//struct sockaddr_ll
+#include <sys/ioctl.h> 			//ioctl()
+#include <linux/if.h>			//struct ifreq
+
 #define BUFFER_MAX 2048
 #define MAX_ROUTE_INFO 20
 #define MAX_ARP_SIZE 20
@@ -19,6 +24,7 @@ const char myip[16] = "192.168.100.2";
 unsigned short checksum(unsigned short* addr,int length);
 unsigned short little_endian(unsigned short x);
 void sub(struct timeval* rec,struct timeval* sen);
+int get_nic_index(int fd, const char* nic_name);
 
 //------------------------------- 结构定义 ----------------------------------------------------
 //ICMP头部，总长度8字节
@@ -83,8 +89,8 @@ int arp_item_index = 0;
 
 //本设备接口与MAC地址的对应关系
 struct DEVICE_ITEM{
-	unsigned char interface[14];
-	unsigned char mac_addr[18];
+	unsigned char interface[14];//自身接口的名称
+	unsigned char mac_addr[18];//自身接口的MAC地址
 }Device[MAX_DEVICE];
 int device_index = 0;
 
@@ -99,10 +105,10 @@ int main(int argc,char* argv[]){
 	//unsigned char gate_mac[7] = {0x00, 0x0c, 0x29, 0x84, 0x0b, 0x6c};
 	//unsigned char my_mac[7] = {0x00, 0x0c, 0x29, 0xc5, 0x1c, 0xc8};
 	strcpy(Arp_table[0].ip_addr, "192.168.100.1");
-	memcpy(Arp_table[0].mac_addr, /*gate_mac*/"00:0c:29:c5:1c:c8", 18);//不加:
+	memcpy(Arp_table[0].mac_addr, /*gate_mac*/"00:0c:29:84:0b:6c", 18);
 	arp_item_index++;
 	strcpy(Device[0].interface, "eth0");
-	memcpy(Device[0].mac_addr, /*my_mac*/"00:0c:29:84:0b:6c", 18);//不加:
+	memcpy(Device[0].mac_addr, /*my_mac*/"00:0c:29:c5:1c:c8", 18);
 	device_index++;
 	/*int k;
 	for(k = 0; k < 6; ++k){
@@ -123,19 +129,21 @@ int main(int argc,char* argv[]){
         printf("error create raw receive socket\n");
         return -1;
     }
-    if((sock_send=socket(AF_INET, SOCK_RAW, /*IPPROTO_ICMP*/IPPROTO_RAW))<0){//打开发送
+    if((sock_send=socket(PF_PACKET, SOCK_RAW, htons(ETH_P_ALL)))<0){//打开发送
         printf("error create raw send socket\n");
         return -1;
     }
-	if(setsockopt(sock_send, IPPROTO_IP, IP_HDRINCL, (char *)&val, sizeof(val))/*==SOCKET_ERROR*/ < 0)//开启IP_HDRINGL
-	{
-		printf("failed to set socket in raw mode.");
-		return 0;
-	}
+	
+	//链路层不需要开启???
+	//if(setsockopt(sock_send, IPPROTO_IP, IP_HDRINCL, (char *)&val, sizeof(val))/*==SOCKET_ERROR*/ < 0)//开启IP_HDRINGL
+	//{
+	//	printf("failed to set socket in raw mode.");
+	//	return 0;
+	//}
 //---------------------------------------------------------------------------------------------------
 
 	//--------------------------- 配置 host 获得 IP 地址 ---------------------------------------------
-	
+	/*
 	unsigned int myaddr = inet_addr(argv[1]);
 	struct hostent* host;//配置host
 	struct sockaddr_in dest_addr;
@@ -153,7 +161,21 @@ int main(int argc,char* argv[]){
     	dest_addr.sin_addr.s_addr = inet_addr(argv[1]);
     	//memcpy( (char *)&dest_addr,(char *)&myaddr,host->h_length);
     	//printf("addr = %s\n", inet_ntoa(dest_addr.sin_addr));
-    }
+    }*/
+
+
+	struct sockaddr_ll saddrll;
+    memset(&saddrll, 0, sizeof(saddrll));
+    saddrll.sll_family = PF_PACKET;
+	//saddrll.sll_protocol = ETH_P_IP;//????
+    saddrll.sll_ifindex = get_nic_index(sock_send, Device[0].interface);//获得本接口对应的类型
+    saddrll.sll_halen = ETH_ALEN;
+	int m;
+	for(m = 0; m < 6; ++m){//目的MAC地址
+		saddrll.sll_addr[m] = strtol(Arp_table[0].mac_addr + 3 * m, NULL, 16);//字符串转16进制数
+		//printf("%x  ", saddrll.sll_addr[m]);
+	}
+    //memcpy(saddrll.sll_addr, dest, ETH_ALEN);
         
 	//-----------------------------------------------------------------------------------------------
 
@@ -173,7 +195,7 @@ int main(int argc,char* argv[]){
 	int flag = 1;
 
 	struct ip* ip_h;
-	int ip_flags[4];
+	int ip_flags[4];//ip's flags
 //---------------------------------------------------------------------------------------------------
 
     while(1){
@@ -244,14 +266,18 @@ int main(int argc,char* argv[]){
 		strcpy(mydata, "Hello World! With my sincerity! ");//传输的data为Hello World! With my sincerity! 
         icmp->check_sum = checksum( (unsigned short *)icmp, 64);
 		int i = 0;
-		for(; i < 98; ++i)
+		/*for(; i < 98; ++i)
 			printf("%x ", (unsigned)buffer_send[i]);
-		printf("\n");
+		printf("\n");*/
+		//printf("111\n");
 	//-----------------------------------------------------------------------------------------------
-        if( sendto(sock_send, buffer_send, 98, 0, (struct sockaddr *)&dest_addr,sizeof(dest_addr) )<0){       
-            printf("sendto fail!\n");
+        if( sendto(sock_send, buffer_send, 98, 0, /*(struct sockaddr *)&dest_addr,sizeof(dest_addr)*/(struct sockaddr*)&saddrll, sizeof(saddrll)) < 0){
+			//unsigned int myerror = WSAGetLastError();    
+            printf("sendto fail!  error = %x, decimal = %d\n", errno, errno);
         }
-		flag = 0;
+		sleep(1);
+		//printf("222\n");
+		//flag = 0;
 	}
         
 //---------------------------------------------------------------------------------------------------
@@ -284,9 +310,9 @@ int main(int argc,char* argv[]){
 			gettimeofday(&tvrecv,NULL); //记录接收时间
 			sub(&tvrecv, &(temp)); //时间差
 			time_tran = tvrecv.tv_sec*1000+tvrecv.tv_usec * 1.0/1000; //1.0勿忘，tv_usec为long型
-			if(icmp_h.seq == 1 && host != NULL){
+			/*if(icmp_h.seq == 1 && host != NULL){//不需要host了，链路层直接控制
 				printf("PING %s (%d.%d.%d.%d) 56(84) bytes of data.\n", host->h_name, p[0], p[1], p[2], p[3]);
-			}
+			}*/
         	/*printf("IP:%d.%d.%d.%d==> %d.%d.%d.%d\n", p[0],p[1],p[2],p[3],p[4],p[5],p[6],p[7]);
 			//printf("check_sum = %x\n", icmp_h.check_sum);
             printf("icmp_head:  type = %u,   code = %u,   check_sum = 0x%x,   icmp_req = %d\n", icmp_h.type, icmp_h.code, little_endian(icmp_h.check_sum), icmp_h.seq);
@@ -332,8 +358,7 @@ unsigned short checksum(unsigned short* addr,int length){
 }
 
 
-void sub(struct timeval* rec,struct timeval* sen)
-{
+void sub(struct timeval* rec,struct timeval* sen){
 	if(rec->tv_usec < sen->tv_usec){//借位
 		rec->tv_usec = rec->tv_usec - sen->tv_usec;
 		rec->tv_sec = rec->tv_sec - 1;
@@ -343,5 +368,16 @@ void sub(struct timeval* rec,struct timeval* sen)
 	rec->tv_sec = rec->tv_sec - sen->tv_sec;
 }
 
-
-
+int get_nic_index(int fd, const char* nic_name){
+	//printf("nicname = %s\n", nic_name);
+    struct ifreq ifr;
+    if(nic_name == NULL)
+        return -1;
+    memset(&ifr, 0, sizeof(ifr));
+    strncpy(ifr.ifr_name, nic_name, IFNAMSIZ);
+    if(ioctl(fd, SIOCGIFINDEX, &ifr) == -1){
+        printf("SIOCGIFINDEX ioctl error\n");
+        return -1;
+    }
+    return ifr.ifr_ifindex;
+}

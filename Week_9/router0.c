@@ -135,10 +135,10 @@ int main(int argc,char* argv[]){
 			printf("----------------------------------------------\n");
 			//---------------------------------------------- ip -----------------------------------------------
             printf("  Sender MAC address: Vmware_");
-			p = arp_head + 8;
+			p = eth_head + 6;
 			printf("%.2x:%02x:%02x: (%.2x:%02x:%02x:%02x:%02x:%02x)\n", p[3],p[4],p[5],p[0],p[1],p[2],p[3],p[4],p[5]);
 			printf("  Target MAC address: Vmware_");
-			p = arp_head + 18;
+			p = eth_head;
 			printf("%.2x:%02x:%02x: (%.2x:%02x:%02x:%02x:%02x:%02x)\n", p[3],p[4],p[5],p[0],p[1],p[2],p[3],p[4],p[5]);
 			Ip_h ip_h;//IP头，同上
 			memcpy(&ip_h, buffer + 14, 20);//赋值ip头
