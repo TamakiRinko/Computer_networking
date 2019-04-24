@@ -6,7 +6,7 @@
 #include <linux/if_ether.h>
 #include <netinet/in.h>
 #define BUFFER_MAX 2048
-
+#define MAX_ROUTE_INFO 10
 
 unsigned short little_endian(unsigned short x);
 
@@ -41,6 +41,15 @@ typedef struct IP_HEAD{
 	struct in_addr src_addr;     //源IP地址
 	struct in_addr dst_addr;     //目的IP地址
 }Ip_h;
+
+//路由表
+struct route_item{
+	char destination[16];
+	char gateway[16];
+	char netmask[16];
+	char interface[16];
+}route_info[MAX_ROUTE_INFO];
+int route_item_index = 0;
 
 
 int main(int argc,char* argv[]){
