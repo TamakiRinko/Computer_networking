@@ -50,11 +50,11 @@ typedef struct ARP_HEAD{
     unsigned short arp_pro;		//协议类型
     unsigned char arp_hln;		//硬件地址长度
     unsigned char arp_pln;		//协议地址长度
-    unsigned short arp_op;		//???
+    unsigned short arp_op;		//opcode
     unsigned char arp_sha[6];	//源MAC
-    unsigned char arp_spa[4];		//源IP
+    unsigned char arp_spa[4];	//源IP
     unsigned char arp_tha[6];	//目的MAC
-    unsigned char arp_tpa[4];		//目的IP
+    unsigned char arp_tpa[4];	//目的IP
 }Arp_h;
 
 /*

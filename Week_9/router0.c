@@ -7,8 +7,11 @@
 #include <netinet/in.h>
 #define BUFFER_MAX 2048
 #define MAX_ROUTE_INFO 10
+#define MAX_DEVICE 5
+const char myip[16] = "192.168.100.1";
 
 unsigned short little_endian(unsigned short x);
+int MATCH(unsigned char* buffer);
 
 
 //ICMP头部，总长度8字节
@@ -42,6 +45,19 @@ typedef struct IP_HEAD{
 	struct in_addr dst_addr;     //目的IP地址
 }Ip_h;
 
+//arp头部，总长度
+typedef struct ARP_HEAD{
+    unsigned short arp_hrd;		//硬件类型
+    unsigned short arp_pro;		//协议类型
+    unsigned char arp_hln;		//硬件地址长度
+    unsigned char arp_pln;		//协议地址长度
+    unsigned short arp_op;		//opcode
+    unsigned char arp_sha[6];	//源MAC
+    unsigned char arp_spa[4];	//源IP
+    unsigned char arp_tha[6];	//目的MAC
+    unsigned char arp_tpa[4];	//目的IP
+}Arp_h;
+
 //路由表
 struct route_item{
 	char destination[16];
@@ -51,38 +67,53 @@ struct route_item{
 }route_info[MAX_ROUTE_INFO];
 int route_item_index = 0;
 
+//本设备接口与MAC地址的对应关系
+struct DEVICE_ITEM{
+    unsigned char interface[14];//自身接口的名称
+    unsigned char mac_addr[18];//自身接口的MAC地址
+}Device[MAX_DEVICE];
+int device_index = 0;
+
 
 int main(int argc,char* argv[]){
-    int sock_fd;
+//--------------------------- 变量定义 --------------------------------------------------------------
     int proto[2];//协议
 	int op[2];//ARP操作码
 	int type;//以太网类型
 	int len;//MAC地址长度 or IP地址长度
     int n_read;
-    char buffer[BUFFER_MAX];
+    unsigned char buffer[BUFFER_MAX];
     char* eth_head;
     char* arp_head;
 	char* ip_head;
     unsigned char *p;
-    
-	if((sock_fd=socket(PF_PACKET,SOCK_RAW,htons(ETH_P_ALL)))<0)
-    { 
+//---------------------------------------------------------------------------------------------------
+
+//--------------------------- arp table && device set -----------------------------------------------
+    strcpy(Device[0].interface, "eth0");
+    memcpy(Device[0].mac_addr, "00:0c:29:84:0b:6c", 18);
+	strcpy(Device[1].interface, "eth1");
+    memcpy(Device[1].mac_addr, "00:0c:29:84:0b:76", 18);
+    device_index += 2;
+//---------------------------------------------------------------------------------------------------
+
+//--------------------------- open ------------------------------------------------------------------
+    int sock_fd;
+	if((sock_fd=socket(PF_PACKET,SOCK_RAW,htons(ETH_P_ALL)))<0){
         printf("error create raw socket\n");
         return -1;
     }
-    
-	/*if((sock_fd=socket(PF_PACKET,SOCK_RAW,htons(ETH_P_ARP)))<0)
-    {
-        printf("error create raw socket\n");
-        return -1;
-    }*/
+//--------------------------------------------------------------------------------------------------
+
     while(1){
         n_read = recvfrom(sock_fd,buffer,2048,0,NULL,NULL);
-        if(n_read < 42)
-        {
+        if(n_read < 42){
             printf("error when recv msg \n");
             return -1;
         }
+		else if(n_read == 42){//收到ARP包，检测并回复
+			MATCH(buffer);
+		}
         eth_head = buffer;
         arp_head = eth_head + 14;
 		ip_head = eth_head + 14;
@@ -197,3 +228,22 @@ unsigned short little_endian(unsigned short x){
 	return result;
 }
 
+int MATCH(unsigned char* buffer){
+	int flag = 1;
+	if(strncmp(buffer, "ffffffffffff", 6) != 0)	flag = 0;//ARP广播
+	Arp_h* arp_h = (Arp_h* )(buffer + 14);
+	if(arp_h->arp_op != 1)	flag = 0;//ARP请求
+	//-------------------- 匹配本机IP ---------------------------------
+	struct in_addr src_in_addr;
+	inet_pton(AF_INET, myip, &src_in_addr);//ip地址转网络字节
+	unsigned char dst_ip[4];
+	memcpy(dst_ip, &src_in_addr, 4);
+	for(m = 0; m < 4; ++m){
+		if(arp_h->arp_tpa[m] != dst_ip[m]){//目的IP不为本机IP
+			flag = 0;
+			break;
+		}
+	}
+	//----------------------------------------------------------------
+	return flag;
+}
