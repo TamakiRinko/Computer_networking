@@ -134,6 +134,10 @@ int main(int argc,char* argv[]){
 	strcpy(route_info[2].netmask, "255.255.255.0");
 	strcpy(route_info[2].interface, "eth1");
 	route_item_index += 3;
+
+	strcpy(Arp_table[0].ip_addr, "192.168.200.1");
+	strcpy(Arp_table[0].mac_addr, "00:0c:29:3d:6c:41");
+	arp_item_index++;
 //---------------------------------------------------------------------------------------------------
 
 //--------------------------- open ------------------------------------------------------------------
@@ -167,8 +171,10 @@ int main(int argc,char* argv[]){
 		}
 		else if(n_read == 98){//ICMP，根据路由规则转发
 			ROUTING(buffer, &sock_icmp_send);
+			//n_read = 100;//不再进循环，直至下一次收到ICMP包
+			break;
 		}
-        eth_head = buffer;
+        /*eth_head = buffer;
         arp_head = eth_head + 14;
 		ip_head = eth_head + 14;
         p = eth_head + 12;//proto
@@ -204,8 +210,7 @@ int main(int argc,char* argv[]){
 			printf("Header length: %d bytes\n", ip_h.hlen * 4);
 			printf("Total Length: %d\n", little_endian(ip_h.total_len));
 			printf("Identification: 0x%x\n", little_endian(ip_h.id));
-			/*printf("Flags: 0x%x\n", ip_h.flags);
-			printf("Fragment offset: %d\n", ip_h.frag_off);*/
+
 			printf("Time to live: %d\n", ip_h.ttl);
 			printf("Header checksum: 0x%x [correct]\n", little_endian(ip_h.check_sum));
 			printf("Source: %d.%d.%d.%d (%d.%d.%d.%d)\nDestination: %d.%d.%d.%d (%d.%d.%d.%d)\n", p[0],p[1],p[2],p[3], p[0],p[1],p[2],p[3], p[4],p[5],p[6],p[7], p[4],p[5],p[6],p[7]);
@@ -229,7 +234,7 @@ int main(int argc,char* argv[]){
 				printf("Data (56 bytes)\n");
 				printf("-----------------------------------------------------------------------------------------------\n\n");
 			}
-		}
+		}*/
     }
     return -1;
 }
@@ -270,21 +275,6 @@ int MATCH(unsigned char* buffer){
 	}
 	//----------------------------------------------------------------
 	return flag;
-}
-
-//获得接口对应的类型
-int get_nic_index(int fd, const char* nic_name){
-    //printf("nicname = %s\n", nic_name);
-    struct ifreq ifr;
-    if(nic_name == NULL)
-        return -1;
-    memset(&ifr, 0, sizeof(ifr));
-    strncpy(ifr.ifr_name, nic_name, IFNAMSIZ);
-    if(ioctl(fd, SIOCGIFINDEX, &ifr) == -1){
-        printf("SIOCGIFINDEX ioctl error\n");
-        return -1;
-    }
-    return ifr.ifr_ifindex;
 }
 
 //回复ARP报文
@@ -352,52 +342,69 @@ void ReplyARP(int* sock_send_arp, unsigned char* buffer_rec){
 
 
 void ROUTING(unsigned char* buffer, int* sock_icmp_send){
+//----------------------------- 变量定义 ----------------------------------------------------
 	struct ip* ip_h;
 	ip_h = (struct ip* )(buffer + 14);
-	unsigned char dst_ip[16] = "\0";
-	unsigned char change_ip[16] = "\0";
-	unsigned char change_dst_mac[18] = "\0";
-	unsigned char change_src_mac[18] = "\0";
-	unsigned char change_interface[16] = "\0";
+	unsigned char dst_ip[16] = "\0";//目的IP
+	unsigned char change_ip[16] = "\0";//下一跳IP
+	unsigned char change_dst_mac[18] = "\0";//新的目的MAC
+	unsigned char change_src_mac[18] = "\0";//新的源MAC
+	unsigned char change_interface[16] = "\0";//转发接口
+	unsigned int netmask;//子网掩码对应的整数
+//------------------------------------------------------------------------------------------
 	strcpy(dst_ip, (char* )inet_ntoa(ip_h->ip_dst));
 	int m;
+//----------------------------- 检查路由表找到下一跳IP地址和转发接口 --------------------------
 	for(m = 0; m < route_item_index; ++m){
-		if(strcmp(dst_ip, route_info[m].destination) == 0){
+		netmask = htonl(inet_addr(route_info[m].netmask));//子网掩码
+		if((htonl(inet_addr(route_info[m].destination)) & netmask) == (htonl(inet_addr(dst_ip)) & netmask)){//IP地址匹配
+		//if(strncmp(dst_ip, route_info[m].destination, netmask_num) == 0){
 			strcpy(change_interface, route_info[m].interface);
 			if(route_info[m].gateway[0] != '*'){
 				strcpy(change_ip, route_info[m].gateway);
 			}
 			else{
-				strcpy(change_ip, route_info[m].destination);
+				strcpy(change_ip, dst_ip);
 			}
 			break;
 		}
 	}
+//------------------------------------------------------------------------------------------
+
+//------------------------------ 检查ARP表找到下一跳MAC地址 ----------------------------------
 	for(m = 0; m < arp_item_index; ++m){
 		if(strcmp(change_ip, Arp_table[m].ip_addr) == 0){
 			strcpy(change_dst_mac, Arp_table[m].mac_addr);
 			break;
 		}
 	}
+//------------------------------------------------------------------------------------------
+
+//------------------------------ 检查设备表找到转发接口的MAC地址 -----------------------------
 	for(m = 0; m < device_index; ++m){
 		if(strcmp(change_interface, Device[m].interface) == 0){
 			strcpy(change_src_mac, Device[m].mac_addr);
 			break;
 		}
 	}
+//------------------------------------------------------------------------------------------
+
+//------------------------------ 重新构造ICMP数据报 -----------------------------------------
 	unsigned char change_buffer[BUFFER_MAX] = "\0";
-	strcpy(change_buffer, buffer);
+	memcpy(change_buffer, buffer, BUFFER_MAX);
 	for(m = 0; m < 6; ++m){
 		change_buffer[m] = strtol(change_dst_mac + 3 * m, NULL, 16);
 		change_buffer[m + 6] = strtol(change_src_mac + 3 * m, NULL, 16);
 	}
+//------------------------------------------------------------------------------------------
 
-	for(m = 0; m < 98; ++m){
+/*	for(m = 0; m < 98; ++m){
 		printf("%x ", change_buffer[m]);
 	}
 	printf("\n");
+*/
 
-
+//------------------------------- 定义链路层发送结构并发送 -----------------------------------
 	struct sockaddr_ll saddrll;//链路层需要用此结构
     memset(&saddrll, 0, sizeof(saddrll));
     saddrll.sll_family = PF_PACKET;
@@ -411,6 +418,22 @@ void ROUTING(unsigned char* buffer, int* sock_icmp_send){
 
 	if( sendto(*sock_icmp_send, change_buffer, 98, 0, (struct sockaddr*)&saddrll, sizeof(saddrll)) < 0){//发送
             printf("now in icmp_send, sendto fail!  error = %x, decimal = %d\n", errno, errno);//发送失败，获得最后错误代码
-            return ;
+            return;
     }
+//-------------------------------------------------------------------------------------------
+}
+
+//获得接口对应的类型
+int get_nic_index(int fd, const char* nic_name){
+    //printf("nicname = %s\n", nic_name);
+    struct ifreq ifr;
+    if(nic_name == NULL)
+        return -1;
+    memset(&ifr, 0, sizeof(ifr));
+    strncpy(ifr.ifr_name, nic_name, IFNAMSIZ);
+    if(ioctl(fd, SIOCGIFINDEX, &ifr) == -1){
+        printf("SIOCGIFINDEX ioctl error\n");
+        return -1;
+    }
+    return ifr.ifr_ifindex;
 }

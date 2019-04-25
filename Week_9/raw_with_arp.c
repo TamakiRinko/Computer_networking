@@ -20,12 +20,13 @@
 #define MAX_ARP_SIZE 20
 #define MAX_DEVICE 5
 const char myip[16] = "192.168.100.2";
+const char gateway_ip[16] = "192.168.100.1";
 
 unsigned short checksum(unsigned short* addr,int length);
 unsigned short little_endian(unsigned short x);
 void sub(struct timeval* rec,struct timeval* sen);
 int get_nic_index(int fd, const char* nic_name);
-void SendARP(int* sock_send_arp, char* dst_ip);
+void SendARP(int* sock_send_arp);
 
 //------------------------------- 结构定义 ----------------------------------------------------
 //ICMP头部，总长度8字节
@@ -165,9 +166,9 @@ int main(int argc,char* argv[]){
         unsigned char buffer_rece_arp[BUFFER_MAX];
         while(!arp_flag){//还未收到ARP回复报文
             if(arp_send_flag == 1){
-                for(m = 0; m < 10; ++m){//暂时实现为发送10个ARP包
-                    SendARP(&sock_send_arp, argv[1]);
-                }
+                //for(m = 0; m < 10; ++m){//暂时实现为发送10个ARP包
+                    SendARP(&sock_send_arp);//只会请求默认网关的IP
+                //}
                 arp_send_flag = 0;
             }
             len_arp = recvfrom(sock_receive_arp, buffer_rece_arp, 2048, 0, NULL, NULL);
@@ -188,7 +189,7 @@ int main(int argc,char* argv[]){
             //--------------------- 匹配目的IP地址 -------------------------
             arp_head2 = (Arp_h* )(buffer_rece_arp + 14);
             struct in_addr src_in_addr;
-            inet_pton(AF_INET, argv[1], &src_in_addr);//ip地址转网络字节
+            inet_pton(AF_INET, gateway_ip, &src_in_addr);//ip地址转网络字节
             unsigned char src_ip[4];
             memcpy(src_ip, &src_in_addr, 4);
             for(m = 0; m < 4; ++m){
@@ -202,7 +203,7 @@ int main(int argc,char* argv[]){
             //---------------------------------------------------------------------------------------
 
             //-------------------- 匹配，添加表项并跳出循环 -------------------------------------------
-            strcpy(Arp_table[arp_item_index].ip_addr, argv[1]);
+            strcpy(Arp_table[arp_item_index].ip_addr, gateway_ip);
             sprintf(Arp_table[arp_item_index].mac_addr, "%02x:%02x:%02x:%02x:%02x:%02x",//not sure!!!!!!!!!!!!!!!!!!!
                 arp_head[8], arp_head[9], arp_head[10], arp_head[11], arp_head[12], arp_head[13]);
             arp_index = arp_item_index;
@@ -386,7 +387,7 @@ int get_nic_index(int fd, const char* nic_name){
     return ifr.ifr_ifindex;
 }
 
-void SendARP(int* sock_send_arp, char* dst_ip){
+void SendARP(int* sock_send_arp){
     int m;
     unsigned char buffer[2048] = "\0";
 //------------------------- 配置链路层发送结构 -------------------------------------------------
@@ -429,7 +430,7 @@ void SendARP(int* sock_send_arp, char* dst_ip){
     }
     struct in_addr src_in_addr, dst_in_addr;
     inet_pton(AF_INET, myip, &src_in_addr);//ip地址转网络字节
-    inet_pton(AF_INET, dst_ip, &dst_in_addr);
+    inet_pton(AF_INET, gateway_ip, &dst_in_addr);//只会请求默认网关的IP
     memcpy(arp_h->arp_spa, &src_in_addr, 4);
     memcpy(arp_h->arp_tpa, &dst_in_addr, 4);
 
