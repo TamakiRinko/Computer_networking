@@ -278,7 +278,7 @@ int main(int argc,char* argv[]){
         icmp->code = 0;//code = 0
         icmp->check_sum = 0;
         icmp->id = htons(0);
-        icmp->seq = seq;
+        icmp->seq = htons(seq);
         seq++;
         gettimeofday(&tsend,NULL); //记录发送时间
         icmp->data = tsend;//存放到icmp数据中
@@ -326,7 +326,7 @@ int main(int argc,char* argv[]){
         gettimeofday(&tvrecv,NULL); //记录接收时间
         sub(&tvrecv, &(temp)); //时间差
         time_tran = tvrecv.tv_sec*1000+tvrecv.tv_usec * 1.0/1000; //1.0勿忘，tv_usec为long型
-        printf("64 bytes from %d.%d.%d.%d: icmp_req=%u ttl=%u time=%.1fms\n", p[0], p[1], p[2], p[3], icmp_h.seq, ip_h2.ip_ttl, time_tran);
+        printf("64 bytes from %d.%d.%d.%d: icmp_req=%u ttl=%u time=%.1fms\n", p[0], p[1], p[2], p[3], ntohs(icmp_h.seq), ip_h2.ip_ttl, time_tran);
         sleep(1);//停1秒
     }
     //---------------------------------------------------------------------------------------------------
