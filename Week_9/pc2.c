@@ -22,23 +22,25 @@
 const char gateway_ip[16] = "192.168.5.1";
 unsigned seq = 1;//icmp_seq
 
-unsigned short checksum(unsigned short* addr,int length);
-unsigned short little_endian(unsigned short x);
-void sub(struct timeval* rec,struct timeval* sen);
-int get_nic_index(int fd, const char* nic_name);
-void SendARP(int* sock);
-int ARP_MATCH_REQUEST(unsigned char* buffer);
-void ReplyARP(int* sock, unsigned char* buffer_rec);
+//接收方函数
 int ICMP_MATCH(unsigned char* buffer);
 void ICMP_Reply(unsigned char* buffer, int* sock);
 void RECEIVE_REPLY(int* sock);
 
+//均使用的函数
+int ARP_MATCH_REQUEST(unsigned char* buffer);
+unsigned short checksum(unsigned short* addr,int length);
+unsigned short little_endian(unsigned short x);
+int get_nic_index(int fd, const char* nic_name);
+void ReplyARP(int* sock, unsigned char* buffer_rec);
 
+//发送方函数
 void SendICMP(int* sock, int arp_index, char** argv);
-//void SendARP(int* sock);
+void SendARP(int* sock);
 int ARP_MATCH_REPLY(int* sock, unsigned char* buffer_rece_arp);
 void RECEIVE(int* sock, int* flag);
 int ARP_FIND(int* sock, char** argv);
+void sub(struct timeval* rec,struct timeval* sen);
 
 //------------------------------- 结构定义 ----------------------------------------------------
 //ICMP头部，总长度8字节
@@ -458,16 +460,18 @@ void RECEIVE_REPLY(int* sock){
     int n_read;
     unsigned char buffer[BUFFER_MAX];//接收字符串
     n_read = recvfrom(*sock,buffer,2048,0,NULL,NULL);
+    Eth_h* eth = (Eth_h* )buffer;
+    unsigned short mytype = ntohs(eth->header.h_proto);//根据proto判断数据报类型
     if(n_read < 42){
         printf("error when recv msg \n");
         return;
     }
-    else if(n_read == 60){//收到ARP请求包，检测并回复，长度为60!
+    else if(mytype == 0x0806){//收到ARP请求包，检测并回复，长度为60!
         if(ARP_MATCH_REQUEST(buffer) == 1){//ARP请求包匹配成功
             ReplyARP(sock, buffer);//回复ARP包提供自己的MAC地址
         }
     }
-    else if(n_read == 98){//ICMP，根据路由规则转发
+    else if(mytype == 0x0800){//ICMP，根据路由规则转发
         if(ICMP_MATCH(buffer) == 1){//回复ICMP
             ICMP_Reply(buffer, sock);
         }
@@ -637,12 +641,14 @@ void RECEIVE(int* sock, int* flag){
 
 //------------------------------ 收包并分析 ----------------------------------------------------
     n_read = recvfrom(*sock, buffer, 2048, 0, NULL, NULL);
+    Eth_h* eth = (Eth_h* )buffer;
+    unsigned short mytype = ntohs(eth->header.h_proto);//根据proto判断数据报类型
     if(n_read < 42)
     {
         printf("error when recv msg \n");
         return ;
     }
-    else if(n_read == 60){
+    else if(mytype == 0x0806){
         if(ARP_MATCH_REQUEST(buffer) == 1){//ARP请求包匹配成功
             ReplyARP(sock, buffer);//回复ARP包提供自己的MAC地址
         }

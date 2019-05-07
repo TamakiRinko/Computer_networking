@@ -68,7 +68,7 @@ struct Route_item{
 	unsigned char destination[16];
 	unsigned char gateway[16];
 	unsigned char netmask[16];
-	unsigned char interface[16];
+	unsigned char interface[14];
 }route_info[MAX_ROUTE_INFO];
 int route_item_index = 0;
 
@@ -600,22 +600,24 @@ void RECEIVE_ROUTER(int* sock){
     unsigned char buffer[BUFFER_MAX] = "\0";
     int index = -1;
     n_read = recvfrom(*sock,buffer,2048,0,NULL,NULL);
+    Eth_h* eth = (Eth_h* )buffer;
+    unsigned short mytype = ntohs(eth->header.h_proto);//根据proto判断数据报类型
     if(n_read < 42){
         printf("error when recv msg \n");
         return;
     }
-    else if(n_read == 60){//收到ARP请求包，检测并回复，长度为60!
+    else if(mytype == 0x0806){//收到ARP请求包，检测并回复，长度为60!
         //printf("here\n");
         if(MATCH(buffer, &index) == 1){//ARP请求包匹配成功
             //printf("here index = %d\n", index);
             ReplyARP(sock, buffer, index);//回复ARP包提供自己的MAC地址
         }
     }
-    else if(n_read == 98){//ICMP，根据路由规则转发
+    else if(mytype == 0x0800){//ICMP，根据路由规则转发
         int type = ICMP_MATCH(buffer);
         if(type == 0)   return;//拒绝该包
         else if(type == 2){
-            ROUTING(buffer, sock);//根据路由规则进行转发          
+            ROUTING(buffer, sock);//根据路由规则进行转发
         }
         else if(type == 1){//目的地址是自己的某接口，回复ICMP包
             ICMP_Reply(buffer, sock);
