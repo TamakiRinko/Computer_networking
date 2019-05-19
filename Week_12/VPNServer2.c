@@ -276,105 +276,6 @@ void ReplyARP(int* sock_send_arp, unsigned char* buffer_rec, int index){
 //-------------------------------------------------------------------------------------------
 }
 
-
-void ROUTING(unsigned char* buffer, int* sock){
-//----------------------------- 变量定义 ----------------------------------------------------
-	struct ip* ip_h;
-	ip_h = (struct ip* )(buffer + 14);
-	unsigned char dst_ip[16] = "\0";//目的IP
-	unsigned char change_ip[16] = "\0";//下一跳IP
-	unsigned char change_dst_mac[18] = "\0";//新的目的MAC
-	unsigned char change_src_mac[18] = "\0";//新的源MAC
-	unsigned char change_interface[16] = "\0";//转发接口
-	unsigned int netmask;//子网掩码对应的整数
-
-    int flag = 0;
-    int interface_index = -1;//接口下标
-//------------------------------------------------------------------------------------------
-	strcpy(dst_ip, (char* )inet_ntoa(ip_h->ip_dst));
-	int m;
-//----------------------------- 检查路由表找到下一跳IP地址和转发接口 --------------------------
-	for(m = 0; m < route_item_index; ++m){
-		netmask = htonl(inet_addr(route_info[m].netmask));//子网掩码
-		if((htonl(inet_addr(route_info[m].destination)) & netmask) == (htonl(inet_addr(dst_ip)) & netmask)){//IP地址匹配
-			strcpy(change_interface, route_info[m].interface);
-			if(route_info[m].gateway[0] != '*'){
-				strcpy(change_ip, route_info[m].gateway);
-			}
-			else{
-				strcpy(change_ip, dst_ip);
-			}
-			break;
-		}
-	}
-//------------------------------------------------------------------------------------------
-
-//------------------------------ 匹配接口下标并找到发送接口MAC地址 ----------------------------
-    for(m = 0; m < device_index; ++m){
-        if(strcmp(change_interface, Device[m].interface) == 0){
-            interface_index = m;
-            strcpy(change_src_mac, Device[m].mac_addr);
-            break;
-        }
-    }
-//------------------------------------------------------------------------------------------
-
-//------------------------------ 检查ARP表找到下一跳MAC地址，若无，则发送ARP请求报文 -----------
-	for(m = 0; m < arp_item_index; ++m){
-		if(strcmp(change_ip, Arp_table[m].ip_addr) == 0){
-			strcpy(change_dst_mac, Arp_table[m].mac_addr);
-            flag = 1;
-			break;
-		}
-	}
-    if(flag == 0){//未有匹配，发送ARP请求报文并保存
-        unsigned char buffer_rece_arp[BUFFER_MAX] = "\0";
-        unsigned char* arp_head = buffer_rece_arp + 14;
-        SendARP(sock, change_ip, interface_index);//发送ARP请求报文
-        while(ARP_MATCH_REPLY(sock, buffer_rece_arp, interface_index, change_ip) != 1){;}//等待ARP回复
-        //-------------------------- 匹配，添加表项 -------------------------------------------------------
-        strcpy(Arp_table[arp_item_index].ip_addr, change_ip);
-        sprintf(Arp_table[arp_item_index].mac_addr, "%02x:%02x:%02x:%02x:%02x:%02x",//sure
-            arp_head[8], arp_head[9], arp_head[10], arp_head[11], arp_head[12], arp_head[13]);
-        strcpy(change_dst_mac, Arp_table[arp_item_index].mac_addr);
-        arp_item_index++;
-        //-----------------------------------------------------------------------------------------------
-    }
-//------------------------------------------------------------------------------------------
-
-//------------------------------ 重新构造ICMP数据报 -----------------------------------------
-	unsigned char change_buffer[BUFFER_MAX] = "\0";
-	memcpy(change_buffer, buffer, BUFFER_MAX);
-	struct ip* ip_h_2 = (struct ip* )(change_buffer + 14);
-	for(m = 0; m < 6; ++m){
-		change_buffer[m] = strtol(change_dst_mac + 3 * m, NULL, 16);
-		change_buffer[m + 6] = strtol(change_src_mac + 3 * m, NULL, 16);
-	}
-	ip_h_2->ip_ttl -= 1;//ttl - 1
-	//if(ip_h_2->ip_ttl == 0)//扔
-	ip_h_2->ip_sum = 0;//temporarily
-	ip_h_2->ip_sum = checksum((unsigned short* )ip_h_2, 20);
-//------------------------------------------------------------------------------------------
-
-//------------------------------- 定义链路层发送结构并发送 -----------------------------------
-	struct sockaddr_ll saddrll;//链路层需要用此结构
-    memset(&saddrll, 0, sizeof(saddrll));
-    saddrll.sll_family = PF_PACKET;
-    //saddrll.sll_protocol = ETH_P_IP;//????
-    saddrll.sll_ifindex = get_nic_index(*sock, change_interface);//获得本接口对应的类型
-    saddrll.sll_halen = ETH_ALEN;
-    for(m = 0; m < 6; ++m){//目的MAC地址
-        saddrll.sll_addr[m] = strtol(change_dst_mac + 3 * m, NULL, 16);//字符串转16进制数
-        //printf("%x  ", saddrll.sll_addr[m]);
-    }
-
-	if( sendto(*sock, change_buffer, 98, 0, (struct sockaddr*)&saddrll, sizeof(saddrll)) < 0){//发送
-            printf("now in icmp_send, sendto fail!  error = %x, decimal = %d\n", errno, errno);//发送失败，获得最后错误代码
-            return;
-    }
-//------------------------------------------------------------------------------------------
-}
-
 //获得接口对应的类型
 int get_nic_index(int fd, const char* nic_name){
     //printf("nicname = %s\n", nic_name);
@@ -650,14 +551,12 @@ void RECEIVE_ROUTER(int* sock){
 }
 
 int repack_packet(char* buffer, int* sock){
-    printf("hahaha here!\n");
     unsigned char buf[BUFFER_MAX] = "\0";
     memcpy(buf, buffer, BUFFER_MAX);
 
     struct ip* ip_h = (struct ip* )(buf + 14);//内部IP头
     char dest_ip[16] = "\0";
     strcpy(dest_ip, (char* )inet_ntoa(ip_h->ip_dst));//获得目的IP地址
-    printf("dest_ip = %s\n", dest_ip);
 
     int i;
     int m;
@@ -686,7 +585,6 @@ int repack_packet(char* buffer, int* sock){
 			break;
         }
     }
-    printf("change_ip = %s, dest_vpn_ip = %s, i = %d, interface = %s\n", change_ip, dest_vpn_ip, i, change_interface);
 
     if(flag == 0){
         strcpy(dest_vpn_ip, dest_ip);//目的VPN IP地址
@@ -702,7 +600,6 @@ int repack_packet(char* buffer, int* sock){
             break;
         }
     }
-    printf("change_src_mac = %s\n", change_src_mac);
     //------------------------------------------------------------------------------------------
 
     //------------------------------ 检查ARP表找到下一跳MAC地址，若无，则发送ARP请求报文 -----------
@@ -713,7 +610,6 @@ int repack_packet(char* buffer, int* sock){
             break;
         }
     }
-    printf("change_dst_mac = %s\n", change_dst_mac);
     if(flag1 == 0){//未有匹配，发送ARP请求报文并保存
         unsigned char buffer_rece_arp[BUFFER_MAX] = "\0";
         unsigned char* arp_head = buffer_rece_arp + 14;
@@ -724,7 +620,6 @@ int repack_packet(char* buffer, int* sock){
         sprintf(Arp_table[arp_item_index].mac_addr, "%02x:%02x:%02x:%02x:%02x:%02x",//sure
             arp_head[8], arp_head[9], arp_head[10], arp_head[11], arp_head[12], arp_head[13]);
         strcpy(change_dst_mac, Arp_table[arp_item_index].mac_addr);
-        printf("change_dst_mac = %s\n", change_dst_mac);
         arp_item_index++;
         //-----------------------------------------------------------------------------------------------
     }
@@ -749,14 +644,15 @@ int repack_packet(char* buffer, int* sock){
         }
     }
     ip_h_2->ip_dst.s_addr = inet_addr(dest_vpn_ip);
-    ip_h_2->ip_ttl = ip_h->ip_ttl - 1;
+    ip_h_2->ip_ttl = ip_h_2->ip_ttl - 1;
+    ip_h_2->ip_len = htons(112);
     ip_h_2->ip_sum = 0;//temporarily
     ip_h_2->ip_sum = checksum((unsigned short* )ip_h_2, 20);
     memcpy(change_buffer + 34, buf + 34, 8);//ICMP头部
     Icmp_h* icmp;
     icmp = (Icmp_h* )(change_buffer + 34);
     icmp->check_sum = 0;
-    icmp->check_sum = checksum( (unsigned short *)icmp, 64);//check_sum，共计算92 = 8 + 20 + 8 + 56字节
+    icmp->check_sum = checksum( (unsigned short *)icmp, 92);//check_sum，共计算92 = 8 + 20 + 8 + 56字节
     //------------------------------------------------------------------------------------------    
 
     //------------------------------- 定义链路层发送结构并发送 -----------------------------------
@@ -779,7 +675,6 @@ int repack_packet(char* buffer, int* sock){
 }
 
 int unpack_packet(char* buffer, int* sock){
-    printf("now in unpack\n");
     unsigned char buf[BUFFER_MAX] = "\0";
     memcpy(buf, buffer, BUFFER_MAX);
 
@@ -812,7 +707,6 @@ int unpack_packet(char* buffer, int* sock){
         }
     }
 
-    printf("change_ip = %s, flag = %d, interface = %s\n", change_ip, flag, change_interface);
 
     if(flag == 1){//本网段，VPN功能
         //------------------------------ 匹配接口下标并找到发送接口MAC地址 ----------------------------
@@ -823,7 +717,6 @@ int unpack_packet(char* buffer, int* sock){
                 break;
             }
         }
-        printf("src_mac = %s\n", change_src_mac);
         //------------------------------------------------------------------------------------------
 
         //------------------------------ 检查ARP表找到下一跳MAC地址，若无，则发送ARP请求报文 -----------
@@ -847,7 +740,6 @@ int unpack_packet(char* buffer, int* sock){
             arp_item_index++;
             //-----------------------------------------------------------------------------------------------
         }
-        printf("my mac = %s\n", change_dst_mac);
         //------------------------------------------------------------------------------------------
 
         //------------------------------ 重新构造ICMP数据报 -----------------------------------------
@@ -863,6 +755,7 @@ int unpack_packet(char* buffer, int* sock){
         eth->header.h_proto = htons((short)0x0800);
         ip_h_2->ip_ttl -= 1;//ttl - 1
         //if(ip_h_2->ip_ttl == 0)//扔
+        //ip_h_2->ip_len = htons(84);//解包完改回98字节
         ip_h_2->ip_sum = 0;//temporarily
         ip_h_2->ip_sum = checksum((unsigned short* )ip_h_2, 20);
         Icmp_h* icmp;
