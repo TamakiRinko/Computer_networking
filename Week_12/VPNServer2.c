@@ -30,6 +30,7 @@ void RECEIVE_ROUTER(int* sock);
 int ICMP_MATCH(unsigned char* buffer);
 void SendARP(int* sock, unsigned char* change_ip, int interface_index);
 int ARP_MATCH_REPLY(int* sock, unsigned char* buffer_rece_arp, int interface_index, unsigned char* change_ip);
+void Reply_VPN(unsigned char* buffer, int* sock);
 
 const char gateway_ip[16] = "172.0.0.1";
 
@@ -644,13 +645,14 @@ int repack_packet(char* buffer, int* sock){
         }
     }
     ip_h_2->ip_dst.s_addr = inet_addr(dest_vpn_ip);
-    ip_h_2->ip_ttl = ip_h_2->ip_ttl - 1;
+    //ip_h_2->ip_ttl = ip_h_2->ip_ttl - 1;
     ip_h_2->ip_len = htons(112);
     ip_h_2->ip_sum = 0;//temporarily
     ip_h_2->ip_sum = checksum((unsigned short* )ip_h_2, 20);
     memcpy(change_buffer + 34, buf + 34, 8);//ICMP头部
     Icmp_h* icmp;
     icmp = (Icmp_h* )(change_buffer + 34);
+    //printf("this id = %d, len = %d, ttl = %d\n", ntohs(icmp->seq), ntohs(ip_h_2->ip_len), ip_h_2->ip_ttl);
     icmp->check_sum = 0;
     icmp->check_sum = checksum( (unsigned short *)icmp, 92);//check_sum，共计算92 = 8 + 20 + 8 + 56字节
     //------------------------------------------------------------------------------------------    
@@ -692,6 +694,10 @@ int unpack_packet(char* buffer, int* sock){
     struct ip* ip_h = (struct ip* )(buf + 42);//内部IP头
     char dest_ip[16] = "\0";
     strcpy(dest_ip, (char* )inet_ntoa(ip_h->ip_dst));//获得目的IP地址
+    if(strcmp(dest_ip, Device[0].ip_addr) == 0){
+        Reply_VPN(buffer, sock);
+        return;
+    }
     for(i = 0; i < route_item_index; ++i){
         netmask = htonl(inet_addr(route_info[i].netmask));//子网掩码
         if((htonl(inet_addr(route_info[i].destination)) & netmask) == (htonl(inet_addr(dest_ip)) & netmask)){//IP地址匹配
@@ -753,7 +759,7 @@ int unpack_packet(char* buffer, int* sock){
             change_buffer[m + 6] = strtol(change_src_mac + 3 * m, NULL, 16);
         }
         eth->header.h_proto = htons((short)0x0800);
-        ip_h_2->ip_ttl -= 1;//ttl - 1
+        //ip_h_2->ip_ttl -= 1;//ttl - 1
         //if(ip_h_2->ip_ttl == 0)//扔
         //ip_h_2->ip_len = htons(84);//解包完改回98字节
         ip_h_2->ip_sum = 0;//temporarily
@@ -790,4 +796,91 @@ int unpack_packet(char* buffer, int* sock){
             }
         }
     }
+}
+
+
+
+void Reply_VPN(unsigned char* buffer, int* sock){
+//-------------------------- 构造IP&&ETH头 ---------------------------------------------------
+    unsigned char buffer_reply[BUFFER_MAX] = "\0";
+    memcpy(buffer_reply, buffer, BUFFER_MAX);
+    int m, t;
+    for(m = 0; m < 6; ++m){//交换MAC
+        buffer_reply[m] = buffer[m + 6];
+        buffer_reply[m + 6] = buffer[m];
+    }
+    //---------------------- 第一层IP --------------------------------------------------------
+    struct ip* ip_h = (struct ip* )(buffer_reply + 14);
+    ip_h->ip_ttl = 64;//time to live
+    ip_h->ip_sum = 0;//temporarily 0
+    memcpy(buffer_reply + 26, buffer + 30, 4);//交换第一层IP
+    memcpy(buffer_reply + 30, buffer + 26, 4);
+    ip_h->ip_sum = checksum((unsigned short* )ip_h, 20);//ip_header's checksum
+    //----------------------------------------------------------------------------------------
+    //---------------------- 第二层IP --------------------------------------------------------
+    ip_h = (struct ip* )(buffer_reply + 42);
+    ip_h->ip_ttl = 64;//time to live
+    ip_h->ip_sum = 0;//temporarily 0
+    memcpy(buffer_reply + 54, buffer + 58, 4);//交换第二层IP
+    memcpy(buffer_reply + 58, buffer + 54, 4);
+    ip_h->ip_sum = checksum((unsigned short* )ip_h, 20);//ip_header's checksum
+    //---------------------------------------------------------------------------------------
+//-------------------------------------------------------------------------------------------
+
+//-------------------------- 构造ICMP头 ------------------------------------------------------
+    Icmp_h* icmp;
+    Icmp_h* icmp2;
+    icmp = (Icmp_h* )(buffer_reply + 62);
+    icmp2 = (Icmp_h* )(buffer + 62);
+    icmp->type = 0;//回复报文，类型为0
+    //icmp->type = 13;
+    icmp->code = 0;//code = 0
+    icmp->check_sum = 0;
+    //icmp->id = htons(0);
+    //icmp->seq = icmp2->seq;//seq不变
+    icmp->check_sum = checksum( (unsigned short *)icmp, 64);
+
+    icmp = (Icmp_h* )(buffer_reply + 34);
+    icmp2 = (Icmp_h* )(buffer + 34);
+    icmp->type = 0;//回复报文，类型为0
+    //icmp->type = 13;
+    icmp->code = 0;//code = 0
+    icmp->check_sum = 0;
+    //icmp->id = htons(0);
+    //icmp->seq = icmp2->seq;//seq不变
+    icmp->check_sum = checksum( (unsigned short *)icmp, 92);
+//-------------------------------------------------------------------------------------------
+
+//--------------------------- 构造链路层发送结构并发送 ----------------------------------------
+    int flag_mac;
+    struct sockaddr_ll saddrll;//链路层需要用此结构
+    memset(&saddrll, 0, sizeof(saddrll));
+    saddrll.sll_family = PF_PACKET;
+    //----------------------- 匹配转发的接口 -------------------------------------------------
+    for(t = 0; t < device_index; ++t){
+        flag_mac = 1;
+        for(m = 0; m < 6; ++m){
+            if(buffer[m] != strtol(Device[t].mac_addr + 3 * m, NULL, 16)){
+                flag_mac = 0;
+                break;
+            }
+        }
+        if(flag_mac == 1){
+            break;
+        }
+    }
+    //printf("t = %d\n", t);
+    //--------------------------------------------------------------------------------------
+    saddrll.sll_ifindex = get_nic_index(*sock, Device[t].interface);//获得本接口对应的类型
+    saddrll.sll_halen = ETH_ALEN;
+    for(m = 0; m < 6; ++m){//目的MAC地址
+        saddrll.sll_addr[m] = buffer_reply[m];//!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!not sure
+        //printf("%x  ", saddrll.sll_addr[m]);
+    }
+
+    if( sendto(*sock, buffer_reply, 126, 0, (struct sockaddr*)&saddrll, sizeof(saddrll)) < 0){//发送
+        printf("now in icmp_send, sendto fail!  error = %x, decimal = %d\n", errno, errno);//发送失败，获得最后错误代码
+        return;
+    }
+//------------------------------------------------------------------------------------------
 }
