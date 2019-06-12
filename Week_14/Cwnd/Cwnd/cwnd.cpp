@@ -4,7 +4,9 @@
 using namespace std;
 
 //string myip = "172.27.133.233";			//本机IP地址
-string myip = "172.27.136.12";
+//string myip = "172.27.136.12";				//助教的
+string myip = "172.27.150.210";
+//string myip = "172.27.131.155";				//侯哥
 string Seq = "Seq";
 string Ack = "Ack";
 string Len = "Len";
@@ -21,11 +23,22 @@ int current_windowsize = 0;
 int main(){
 	ifstream fin;
 	ofstream fout;
-	fout.open("result.csv", ios::out);
+	//fout.open("result.csv", ios::out);
+	//fout.open("resultlong.csv", ios::out);
+	//fout.open("resultlong2.csv", ios::out);
+	//fout.open("result1.csv", ios::out);
+	fout.open("resultshort.csv", ios::out);
+
+
+
 	//fin.open("test_1.csv", ios::in);
 	//fin.open("last_1.csv", ios::in);
 	//fin.open("last_2.csv", ios::in);
-	fin.open("upload_file_short.csv", ios::in); 
+	//fin.open("upload_file_short.csv", ios::in); 
+	//fin.open("long.csv", ios::in);
+	//fin.open("long2.csv", ios::in);
+	//fin.open("1txt.csv", ios::in);
+	fin.open("short.csv", ios::in);
 	if (!fout.is_open()){
 		cout << "fout open fail!" << endl;
 		return 0;
